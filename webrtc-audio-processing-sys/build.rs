@@ -373,7 +373,23 @@ fn main() -> Result<()> {
 
     // Prefix defined symbols in the webrtc library (bundled builds only)
     // Returns the list of renamed symbols to update wrapper references later
-    let renamed_symbols = webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?;
+    //
+    // Skipped on MSVC. The renaming is objcopy over the archive's defined
+    // symbols, which works on ELF and Mach-O but does not reach every reference
+    // in COFF objects -- inline methods and template instantiations pulled in
+    // through the headers keep pointing at the original names, and the mismatch
+    // surfaces as hundreds of unresolved externals at link time. The prefix
+    // only exists so two major versions can coexist in one binary; giving that
+    // up on Windows is a much smaller cost than the crate not building there.
+    let renamed_symbols = if target_is_msvc() {
+        println!(
+            "cargo:warning=symbol prefixing is skipped on MSVC, so this build cannot coexist \
+             with another major version of webrtc-audio-processing in the same binary"
+        );
+        Vec::new()
+    } else {
+        webrtc::prefix_library_symbols(&lib_dirs, SYMBOL_PREFIX)?
+    };
 
     for dir in &lib_dirs {
         println!("cargo:rustc-link-search=native={}", dir.display());
@@ -446,19 +462,21 @@ fn main() -> Result<()> {
     // already had every symbol renamed by this point, so skipping the wrapper
     // leaves it referencing the old names and the failure surfaces much later
     // as a wall of unresolved externals at link time.
-    let wrapper_lib = if target_is_msvc() {
-        out_dir().join("webrtc_audio_processing_wrapper.lib")
-    } else {
-        out_dir().join("libwebrtc_audio_processing_wrapper.a")
-    };
-    if !wrapper_lib.exists() {
-        bail!(
-            "Cannot find the wrapper archive at {} to prefix its symbols. \
-             Without it the wrapper cannot link against the renamed library.",
-            wrapper_lib.display()
-        );
+    if !renamed_symbols.is_empty() {
+        let wrapper_lib = if target_is_msvc() {
+            out_dir().join("webrtc_audio_processing_wrapper.lib")
+        } else {
+            out_dir().join("libwebrtc_audio_processing_wrapper.a")
+        };
+        if !wrapper_lib.exists() {
+            bail!(
+                "Cannot find the wrapper archive at {} to prefix its symbols. \
+                 Without it the wrapper cannot link against the renamed library.",
+                wrapper_lib.display()
+            );
+        }
+        prefix_archive_symbols(&wrapper_lib, &renamed_symbols, SYMBOL_PREFIX)?;
     }
-    prefix_archive_symbols(&wrapper_lib, &renamed_symbols, SYMBOL_PREFIX)?;
 
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
