@@ -18,6 +18,15 @@ const MACOSX_DEPLOYMENT_TARGET_VAR: &str = "MACOSX_DEPLOYMENT_TARGET";
 /// Symbol prefix for the webrtc-audio-processing library to allow multiple versions to coexist.
 const SYMBOL_PREFIX: &str = "v2_";
 
+/// Whether we are building for an MSVC target.
+///
+/// Reads `CARGO_CFG_TARGET_ENV` rather than using `cfg!`, because in a build
+/// script `cfg!` describes the host and would answer for the wrong machine when
+/// cross-compiling.
+fn target_is_msvc() -> bool {
+    env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "msvc")
+}
+
 fn out_dir() -> PathBuf {
     std::env::var("OUT_DIR").expect("OUT_DIR environment var not set.").into()
 }
@@ -218,6 +227,14 @@ mod webrtc {
             meson.arg(format!("-Dcpp_link_args={}", link_args));
         }
 
+        // WebRTC uses designated initializers, which GCC and Clang accept as a
+        // C++17 extension but MSVC rejects outright (C7555). meson.build asks
+        // for c++17, so raise it to c++20 for MSVC only -- the bundled sources
+        // build clean at that standard.
+        if target_is_msvc() {
+            meson.arg("-Dcpp_std=c++20");
+        }
+
         let status = meson
             .arg("-Ddefault_library=static")
             .arg(webrtc_build_dir.as_os_str())
@@ -396,13 +413,19 @@ fn main() -> Result<()> {
     // linkers (like when passing -Wl,--as-needed) may discard the c++ library (automatically
     // added by cc) from the linking list, resulting in build failure.
     // The linking order should respect the dependency graph, i.e. wrapper -> webrtc-2.
-    cc_build
-        .cpp(true)
-        .file("src/wrapper.cpp")
-        .includes(&include_dirs)
-        .flag("-std=c++17")
-        .flag("-Wno-unused-parameter")
-        .out_dir(out_dir());
+    cc_build.cpp(true).file("src/wrapper.cpp").includes(&include_dirs).out_dir(out_dir());
+
+    // MSVC does not speak GCC's flag syntax. `-Wno-unused-parameter` reaches it
+    // as `/Wno-unused-parameter` and is a hard error (D8021, invalid numeric
+    // argument to the warning-level flag), which is what stopped this crate
+    // building on Windows at all.
+    if target_is_msvc() {
+        // c++20 rather than c++17 for the same reason as the meson build: the
+        // headers this wrapper includes use designated initializers.
+        cc_build.flag("/std:c++20");
+    } else {
+        cc_build.flag("-std=c++17").flag("-Wno-unused-parameter");
+    }
 
     // Inform wrapper code that headers for internal classes (ResidualEchoDetector) are available.
     #[cfg(feature = "bundled")]
