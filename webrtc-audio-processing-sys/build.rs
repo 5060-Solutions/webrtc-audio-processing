@@ -27,6 +27,71 @@ fn target_is_msvc() -> bool {
     env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "msvc")
 }
 
+/// The architecture we are building for, as Cargo names it.
+fn target_arch() -> String {
+    env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default()
+}
+
+/// Whether we are building for an Apple platform.
+fn target_is_macos() -> bool {
+    env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos")
+}
+
+/// Apple's spelling of an architecture, for clang's `-arch`.
+fn apple_arch(cargo_arch: &str) -> Option<&'static str> {
+    match cargo_arch {
+        "aarch64" => Some("arm64"),
+        "x86_64" => Some("x86_64"),
+        _ => None,
+    }
+}
+
+/// meson's spelling of an architecture, for a cross file's `cpu_family`.
+fn meson_cpu_family(cargo_arch: &str) -> Option<&'static str> {
+    match cargo_arch {
+        "aarch64" => Some("aarch64"),
+        "x86_64" => Some("x86_64"),
+        _ => None,
+    }
+}
+
+/// Render a list of arguments as a meson array literal, e.g. `['-arch', 'arm64']`.
+fn meson_list(args: &[String]) -> String {
+    let quoted: Vec<String> = args.iter().map(|a| format!("'{a}'")).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// Write a meson cross file describing an Apple target on a different-arch host.
+///
+/// Without one, meson probes the build machine and emits host-architecture
+/// objects, which then fail to link against the Rust target. Only the machine
+/// description and the tools live here; compile and link flags are passed on
+/// the command line, because meson lets `-D` options override a cross file and
+/// having them in both places means the command line silently wins.
+fn write_macos_cross_file(cargo_arch: &str) -> Result<PathBuf> {
+    let cpu_family = meson_cpu_family(cargo_arch)
+        .with_context(|| format!("No meson cpu_family known for target arch '{cargo_arch}'"))?;
+    let path = out_dir().join(format!("meson-cross-macos-{cargo_arch}.ini"));
+    let contents = format!(
+        "[binaries]\n\
+         c = 'clang'\n\
+         cpp = 'clang++'\n\
+         ar = 'ar'\n\
+         strip = 'strip'\n\
+         \n\
+         [host_machine]\n\
+         system = 'darwin'\n\
+         subsystem = 'macos'\n\
+         kernel = 'xnu'\n\
+         cpu_family = '{cpu_family}'\n\
+         cpu = '{cpu_family}'\n\
+         endian = 'little'\n"
+    );
+    std::fs::write(&path, contents)
+        .with_context(|| format!("Failed to write meson cross file to {}", path.display()))?;
+    Ok(path)
+}
+
 fn out_dir() -> PathBuf {
     std::env::var("OUT_DIR").expect("OUT_DIR environment var not set.").into()
 }
@@ -221,10 +286,38 @@ mod webrtc {
         meson.arg("setup").arg("--prefix").arg(out_dir().as_os_str());
         meson.arg("--reconfigure");
 
-        if cfg!(target_os = "macos") {
-            let link_args = "['-framework', 'CoreFoundation', '-framework', 'Foundation']";
-            meson.arg(format!("-Dc_link_args={}", link_args));
-            meson.arg(format!("-Dcpp_link_args={}", link_args));
+        if target_is_macos() {
+            let arch = target_arch();
+            // Pin the architecture explicitly. On a native build this matches
+            // what meson would have picked anyway; on a cross build (an Intel
+            // slice produced on an Apple Silicon runner, say) it is the
+            // difference between a library that links and one that does not.
+            let arch_args: Vec<String> = match apple_arch(&arch) {
+                Some(apple) => vec!["-arch".to_owned(), apple.to_owned()],
+                None => Vec::new(),
+            };
+
+            let mut link_args = arch_args.clone();
+            link_args.extend(
+                ["-framework", "CoreFoundation", "-framework", "Foundation"]
+                    .iter()
+                    .map(|s| (*s).to_owned()),
+            );
+
+            if !arch_args.is_empty() {
+                meson.arg(format!("-Dc_args={}", meson_list(&arch_args)));
+                meson.arg(format!("-Dcpp_args={}", meson_list(&arch_args)));
+            }
+            meson.arg(format!("-Dc_link_args={}", meson_list(&link_args)));
+            meson.arg(format!("-Dcpp_link_args={}", meson_list(&link_args)));
+
+            // Flags alone are not enough when the architectures differ: meson
+            // probes the build machine for things like pointer size and
+            // endianness, so it needs to be told what it is really targeting.
+            if std::env::consts::ARCH != arch {
+                let cross_file = write_macos_cross_file(&arch)?;
+                meson.arg("--cross-file").arg(&cross_file);
+            }
         }
 
         // WebRTC uses designated initializers, which GCC and Clang accept as a
