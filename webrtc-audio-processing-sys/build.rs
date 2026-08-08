@@ -326,6 +326,15 @@ mod webrtc {
         // build clean at that standard.
         if target_is_msvc() {
             meson.arg("-Dcpp_std=c++20");
+
+            // Match the C runtime that `cc` uses for the wrapper, which is the
+            // release DLL runtime (/MD). meson defaults b_vscrt to
+            // from_buildtype, and this project asks for `debugoptimized`, which
+            // selects the debug runtime (/MDd). Two CRTs in one binary means
+            // allocations made on one side get freed on the other, and the
+            // result is a STATUS_ACCESS_VIOLATION at runtime rather than
+            // anything visible at build time.
+            meson.arg("-Db_vscrt=md");
         }
 
         let status = meson
