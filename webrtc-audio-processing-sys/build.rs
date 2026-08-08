@@ -440,10 +440,25 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/wrapper.cpp");
 
     // Prefix the wrapper library's references to webrtc symbols to match the renamed webrtc library.
-    let wrapper_lib = out_dir().join("libwebrtc_audio_processing_wrapper.a");
-    if wrapper_lib.exists() {
-        prefix_archive_symbols(&wrapper_lib, &renamed_symbols, SYMBOL_PREFIX)?;
+    //
+    // cc-rs names the archive after the target's convention, so look for the
+    // right one. Getting this wrong is not harmless: the webrtc library has
+    // already had every symbol renamed by this point, so skipping the wrapper
+    // leaves it referencing the old names and the failure surfaces much later
+    // as a wall of unresolved externals at link time.
+    let wrapper_lib = if target_is_msvc() {
+        out_dir().join("webrtc_audio_processing_wrapper.lib")
+    } else {
+        out_dir().join("libwebrtc_audio_processing_wrapper.a")
+    };
+    if !wrapper_lib.exists() {
+        bail!(
+            "Cannot find the wrapper archive at {} to prefix its symbols. \
+             Without it the wrapper cannot link against the renamed library.",
+            wrapper_lib.display()
+        );
     }
+    prefix_archive_symbols(&wrapper_lib, &renamed_symbols, SYMBOL_PREFIX)?;
 
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static={LIB_NAME}");
