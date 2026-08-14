@@ -28,16 +28,19 @@ fn target_is_msvc() -> bool {
 }
 
 /// The architecture we are building for, as Cargo names it.
+#[cfg(feature = "bundled")]
 fn target_arch() -> String {
     env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default()
 }
 
 /// Whether we are building for an Apple platform.
+#[cfg(feature = "bundled")]
 fn target_is_macos() -> bool {
     env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos")
 }
 
 /// Apple's spelling of an architecture, for clang's `-arch`.
+#[cfg(feature = "bundled")]
 fn apple_arch(cargo_arch: &str) -> Option<&'static str> {
     match cargo_arch {
         "aarch64" => Some("arm64"),
@@ -47,6 +50,7 @@ fn apple_arch(cargo_arch: &str) -> Option<&'static str> {
 }
 
 /// meson's spelling of an architecture, for a cross file's `cpu_family`.
+#[cfg(feature = "bundled")]
 fn meson_cpu_family(cargo_arch: &str) -> Option<&'static str> {
     match cargo_arch {
         "aarch64" => Some("aarch64"),
@@ -56,6 +60,7 @@ fn meson_cpu_family(cargo_arch: &str) -> Option<&'static str> {
 }
 
 /// Render a list of arguments as a meson array literal, e.g. `['-arch', 'arm64']`.
+#[cfg(feature = "bundled")]
 fn meson_list(args: &[String]) -> String {
     let quoted: Vec<String> = args.iter().map(|a| format!("'{a}'")).collect();
     format!("[{}]", quoted.join(", "))
@@ -68,6 +73,7 @@ fn meson_list(args: &[String]) -> String {
 /// description and the tools live here; compile and link flags are passed on
 /// the command line, because meson lets `-D` options override a cross file and
 /// having them in both places means the command line silently wins.
+#[cfg(feature = "bundled")]
 fn write_macos_cross_file(cargo_arch: &str) -> Result<PathBuf> {
     let cpu_family = meson_cpu_family(cargo_arch)
         .with_context(|| format!("No meson cpu_family known for target arch '{cargo_arch}'"))?;
