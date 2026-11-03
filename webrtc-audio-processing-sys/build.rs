@@ -292,6 +292,21 @@ mod webrtc {
         meson.arg("setup").arg("--prefix").arg(out_dir().as_os_str());
         meson.arg("--reconfigure");
 
+        // Compiler flags for the C and C++ sources. GCC's default is
+        // -ffp-contract=fast: it fuses a*b+c into a single multiply-add across
+        // statements wherever the target has FMA, and a toolchain whose
+        // baseline includes FMA (Ubuntu 26.04's g++ 15 does) therefore
+        // produces different AEC3 arithmetic from the one WebRTC is developed
+        // against. The drift is large enough to roughly halve the echo
+        // attenuation (5060-Solutions/rtp-engine#15). Clang only contracts
+        // within a statement; hold every compiler to no contraction so the
+        // numerics do not depend on which image built the library. MSVC does
+        // not take this flag and does not contract by default.
+        let mut compile_args: Vec<String> = Vec::new();
+        if !target_is_msvc() {
+            compile_args.push("-ffp-contract=off".to_owned());
+        }
+
         if target_is_macos() {
             let arch = target_arch();
             // Pin the architecture explicitly. On a native build this matches
@@ -302,6 +317,7 @@ mod webrtc {
                 Some(apple) => vec!["-arch".to_owned(), apple.to_owned()],
                 None => Vec::new(),
             };
+            compile_args.extend(arch_args.iter().cloned());
 
             let mut link_args = arch_args.clone();
             link_args.extend(
@@ -310,10 +326,6 @@ mod webrtc {
                     .map(|s| (*s).to_owned()),
             );
 
-            if !arch_args.is_empty() {
-                meson.arg(format!("-Dc_args={}", meson_list(&arch_args)));
-                meson.arg(format!("-Dcpp_args={}", meson_list(&arch_args)));
-            }
             meson.arg(format!("-Dc_link_args={}", meson_list(&link_args)));
             meson.arg(format!("-Dcpp_link_args={}", meson_list(&link_args)));
 
@@ -324,6 +336,11 @@ mod webrtc {
                 let cross_file = write_macos_cross_file(&arch)?;
                 meson.arg("--cross-file").arg(&cross_file);
             }
+        }
+
+        if !compile_args.is_empty() {
+            meson.arg(format!("-Dc_args={}", meson_list(&compile_args)));
+            meson.arg(format!("-Dcpp_args={}", meson_list(&compile_args)));
         }
 
         // WebRTC uses designated initializers, which GCC and Clang accept as a
