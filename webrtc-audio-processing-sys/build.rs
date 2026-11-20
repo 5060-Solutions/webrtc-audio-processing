@@ -632,6 +632,13 @@ fn main() -> Result<()> {
     for dir in &include_dirs {
         builder = builder.clang_arg(format!("-I{}", dir.display()));
     }
+    if target_is_msvc() {
+        // MSVC's STL asserts that the compiler parsing it is at least the
+        // Clang that shipped with that Visual Studio (STL1000); the libclang
+        // bindgen loads is usually older. Only declarations are parsed here,
+        // so the mismatch is harmless and the check is switched off.
+        builder = builder.clang_arg("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH");
+    }
     builder
         .generate()
         .expect("Unable to generate bindings")
